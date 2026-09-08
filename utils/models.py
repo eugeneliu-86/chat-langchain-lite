@@ -13,8 +13,9 @@ from langchain.chat_models import init_chat_model
 # Routes every model call through the LangSmith Gateway so that workspace
 # policies (PII / secrets / allow-lists / cost caps) are enforced.
 # MODEL_CONFIG is the single source the frontend's Gateway pane reads.
+effective_model = os.getenv("CHAT_LANGCHAIN_LITE_MODEL") or "claude-sonnet-4-6"
 MODEL_CONFIG = {
-    "model": "claude-sonnet-4-6",
+    "model": effective_model,
     "provider": "anthropic",
     "base_url": "https://gateway.smith.langchain.com/anthropic",
 }

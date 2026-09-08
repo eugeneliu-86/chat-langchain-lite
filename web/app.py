@@ -862,7 +862,11 @@ async def send(session, q: str = ""):
             stream_mode="messages-tuple",
             stream_resumable=True,
             if_not_exists="create",
-            metadata={"demo": "true", "demo_type": APP_SLUG},
+            metadata={
+                "demo": "true",
+                "demo_type": APP_SLUG,
+                "environment": os.getenv("CHAT_LANGCHAIN_LITE_ENV", "demo"),
+            },
             config={
                 "run_name": f"{APP_SLUG}-demo",
                 "tags": ["engine-demo", CONTEXT_HUB_REPO],

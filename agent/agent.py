@@ -1,4 +1,5 @@
 import os
+import uuid
 
 from langchain.agents import create_agent
 from langchain_anthropic import ChatAnthropic
@@ -11,7 +12,7 @@ from deepagents.backends.context_hub import ContextHubBackend
 from agent.tools import TOOLS
 from context import CONTEXT_HUB_REPO, get_prompt
 from utils.streaming import iter_text
-from utils.models import model
+from utils.models import MODEL_CONFIG, model
 
 # AGENTS.md is the agent's system prompt — pulled fresh from LangSmith
 # Context Hub at module import.
@@ -19,16 +20,6 @@ from utils.models import model
 # `scripts/setup.py` (`push_agents_md()`). A prompt fix can be applied BOTH as a
 # PR to that seed AND to the live Context Hub.
 SYSTEM_PROMPT = get_prompt()
-
-# Override with CHAT_LANGCHAIN_LITE_MODEL env var — used by setup.py to seed
-# baseline experiments against a more expensive model (Sonnet) for the
-# demo's cost/latency comparison.
-_DEFAULT_MODEL = "claude-haiku-4-5-20251001"
-
-
-def _model_id() -> str:
-    return os.getenv("CHAT_LANGCHAIN_LITE_MODEL") or _DEFAULT_MODEL
-
 
 # The Context Hub-backed filesystem holds the agent's OWN context (AGENTS.md,
 # playbooks) — it is a read-only reference, NOT a user-delivery channel.
@@ -53,10 +44,14 @@ def build_agent():
     )
 
 
-def _config(thread_id: str | None = None) -> RunnableConfig:
-    metadata = {"demo": "true", "demo_type": "chat-lc-lite", "model": _model_id()}
-    if thread_id:
-        metadata["thread_id"] = thread_id
+def _config(thread_id: str) -> RunnableConfig:
+    metadata = {
+        "demo": "true",
+        "demo_type": "chat-lc-lite",
+        "model": MODEL_CONFIG["model"],
+        "thread_id": thread_id,
+        "environment": os.getenv("CHAT_LANGCHAIN_LITE_ENV", "demo"),
+    }
     return RunnableConfig(
         run_name="chat-lc-lite-demo",
         metadata=metadata,
@@ -69,21 +64,32 @@ def _user_msg(question: str) -> dict:
 
 
 def invoke_agent(question: str, thread_id: str | None = None) -> dict:
-    """Run the agent once. Returns {output, tools_called, messages}."""
-    result = build_agent().invoke(_user_msg(question), _config(thread_id))
+    """Run the agent once and return its output with the resolved thread ID."""
+    resolved_thread_id = thread_id or str(uuid.uuid4())
+    result = build_agent().invoke(_user_msg(question), _config(resolved_thread_id))
     output = next(
         (m.content for m in reversed(result["messages"])
          if isinstance(getattr(m, "content", None), str) and m.content),
         "",
     )
     tools_called = [m.name for m in result["messages"] if isinstance(m, ToolMessage)]
-    return {"output": output, "tools_called": tools_called, "messages": result["messages"]}
+    return {
+        "output": output,
+        "tools_called": tools_called,
+        "messages": result["messages"],
+        "thread_id": resolved_thread_id,
+    }
 
 
 def stream_agent(question: str, thread_id: str | None = None):
     """Stream the agent's response text as it's generated."""
-    for chunk, _meta in build_agent().stream(
-        _user_msg(question), _config(thread_id), stream_mode="messages"
-    ):
-        if isinstance(chunk, AIMessageChunk):
-            yield from iter_text(chunk)
+    resolved_thread_id = thread_id or str(uuid.uuid4())
+
+    def response_stream():
+        for chunk, _meta in build_agent().stream(
+            _user_msg(question), _config(resolved_thread_id), stream_mode="messages"
+        ):
+            if isinstance(chunk, AIMessageChunk):
+                yield from iter_text(chunk)
+
+    return resolved_thread_id, response_stream()
