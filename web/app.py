@@ -75,6 +75,7 @@ APP_SLUG = "chat-lc-lite"
 # online-eval automation. Keep these names stable so the two can't drift.
 SCORE_KEY = "user_score"
 COMMENT_KEY = "user_comment"
+TRUNCATION_NOTICE = "\n\n⚠️ This response was truncated because it reached the model's token limit."
 
 # Loopback hosts the frontend is allowed to reach. The frontend and the graph run
 # in the same process/container, so the SDK target is always localhost —
@@ -883,6 +884,8 @@ async def stream(session, run: str = ""):
 
     async def gen():
         acc = ""
+        response_metadata = {}
+        stream_completed = False
         if not run_id or not thread_id:
             yield sse_message("⚠️ Invalid run.", event="token")
             yield sse_message(
@@ -902,15 +905,20 @@ async def stream(session, run: str = ""):
                 msg = data[0]
                 if not isinstance(msg, dict) or msg.get("type") != "AIMessageChunk":
                     continue
+                response_metadata = msg.get("response_metadata") or {}
                 acc += _msg_text(msg.get("content"))
                 if acc:
                     yield sse_message(acc, event="token")
+            stream_completed = True
         except Exception:
             # Each token frame replaces the bubble, so append to acc rather than
             # emitting the warning alone — otherwise a mid-stream failure would
             # wipe the partial answer already shown.
             warning = "\n\n⚠️ The response was interrupted. Please try again."
             yield sse_message((acc + warning) if acc else warning.strip(), event="token")
+        if stream_completed and response_metadata.get("stop_reason") == "max_tokens":
+            acc += TRUNCATION_NOTICE
+            yield sse_message(acc, event="token")
         # Feedback + trace bar once the response is complete.
         yield sse_message(fb_bar(run_id), event="actions")
         # The payload must be non-empty: an SSE frame with no `data:` line is not
