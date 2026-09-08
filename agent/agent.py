@@ -13,6 +13,8 @@ from context import CONTEXT_HUB_REPO, get_prompt
 from utils.streaming import iter_text
 from utils.models import model
 
+TRUNCATION_NOTICE = "\n\n⚠️ This response was truncated because it reached the model's token limit."
+
 # AGENTS.md is the agent's system prompt — pulled fresh from LangSmith
 # Context Hub at module import.
 # Seed source: utils/context_hub.py (`_SEED_AGENTS_MD`), pushed to Context Hub by
@@ -71,19 +73,35 @@ def _user_msg(question: str) -> dict:
 def invoke_agent(question: str, thread_id: str | None = None) -> dict:
     """Run the agent once. Returns {output, tools_called, messages}."""
     result = build_agent().invoke(_user_msg(question), _config(thread_id))
-    output = next(
-        (m.content for m in reversed(result["messages"])
+    final_message = next(
+        (m for m in reversed(result["messages"])
          if isinstance(getattr(m, "content", None), str) and m.content),
-        "",
+        None,
     )
+    output = final_message.content if final_message else ""
+    truncated = bool(
+        final_message
+        and (final_message.response_metadata or {}).get("stop_reason") == "max_tokens"
+    )
+    if truncated:
+        output += TRUNCATION_NOTICE
     tools_called = [m.name for m in result["messages"] if isinstance(m, ToolMessage)]
-    return {"output": output, "tools_called": tools_called, "messages": result["messages"]}
+    return {
+        "output": output,
+        "tools_called": tools_called,
+        "messages": result["messages"],
+        "truncated": truncated,
+    }
 
 
 def stream_agent(question: str, thread_id: str | None = None):
     """Stream the agent's response text as it's generated."""
+    response_metadata = {}
     for chunk, _meta in build_agent().stream(
         _user_msg(question), _config(thread_id), stream_mode="messages"
     ):
         if isinstance(chunk, AIMessageChunk):
+            response_metadata = chunk.response_metadata or {}
             yield from iter_text(chunk)
+    if response_metadata.get("stop_reason") == "max_tokens":
+        yield TRUNCATION_NOTICE
