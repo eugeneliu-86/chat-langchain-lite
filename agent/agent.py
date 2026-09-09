@@ -2,7 +2,7 @@ import os
 
 from langchain.agents import create_agent
 from langchain_anthropic import ChatAnthropic
-from langchain_core.messages import AIMessageChunk, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 from langchain_core.runnables import RunnableConfig
 
 from deepagents.middleware.filesystem import FilesystemMiddleware
@@ -10,7 +10,7 @@ from deepagents.backends.context_hub import ContextHubBackend
 
 from agent.tools import TOOLS
 from context import CONTEXT_HUB_REPO, get_prompt
-from utils.streaming import iter_text
+from utils.streaming import finalize_response_text, iter_text, response_stop_reason
 from utils.models import model
 
 # AGENTS.md is the agent's system prompt — pulled fresh from LangSmith
@@ -71,10 +71,14 @@ def _user_msg(question: str) -> dict:
 def invoke_agent(question: str, thread_id: str | None = None) -> dict:
     """Run the agent once. Returns {output, tools_called, messages}."""
     result = build_agent().invoke(_user_msg(question), _config(thread_id))
-    output = next(
-        (m.content for m in reversed(result["messages"])
-         if isinstance(getattr(m, "content", None), str) and m.content),
-        "",
+    final_message = next(
+        (m for m in reversed(result["messages"])
+         if isinstance(m, AIMessage) and isinstance(m.content, str) and m.content),
+        None,
+    )
+    output = finalize_response_text(
+        final_message.content if final_message else "",
+        response_stop_reason(final_message),
     )
     tools_called = [m.name for m in result["messages"] if isinstance(m, ToolMessage)]
     return {"output": output, "tools_called": tools_called, "messages": result["messages"]}
@@ -82,8 +86,16 @@ def invoke_agent(question: str, thread_id: str | None = None) -> dict:
 
 def stream_agent(question: str, thread_id: str | None = None):
     """Stream the agent's response text as it's generated."""
+    response_text = ""
+    stop_reason = None
     for chunk, _meta in build_agent().stream(
         _user_msg(question), _config(thread_id), stream_mode="messages"
     ):
         if isinstance(chunk, AIMessageChunk):
-            yield from iter_text(chunk)
+            stop_reason = response_stop_reason(chunk) or stop_reason
+            for text in iter_text(chunk):
+                response_text += text
+                yield text
+    finalized = finalize_response_text(response_text, stop_reason)
+    if finalized != response_text:
+        yield finalized[len(response_text):]

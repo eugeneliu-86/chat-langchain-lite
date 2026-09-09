@@ -62,6 +62,7 @@ from langsmith.schemas import FeedbackConfig
 from starlette.responses import PlainTextResponse, RedirectResponse
 
 from context import CONTEXT_HUB_REPO
+from utils.streaming import finalize_response_text, response_stop_reason
 
 load_dotenv(override=True)
 
@@ -883,6 +884,7 @@ async def stream(session, run: str = ""):
 
     async def gen():
         acc = ""
+        stop_reason = None
         if not run_id or not thread_id:
             yield sse_message("⚠️ Invalid run.", event="token")
             yield sse_message(
@@ -902,6 +904,7 @@ async def stream(session, run: str = ""):
                 msg = data[0]
                 if not isinstance(msg, dict) or msg.get("type") != "AIMessageChunk":
                     continue
+                stop_reason = response_stop_reason(msg) or stop_reason
                 acc += _msg_text(msg.get("content"))
                 if acc:
                     yield sse_message(acc, event="token")
@@ -911,6 +914,9 @@ async def stream(session, run: str = ""):
             # wipe the partial answer already shown.
             warning = "\n\n⚠️ The response was interrupted. Please try again."
             yield sse_message((acc + warning) if acc else warning.strip(), event="token")
+        finalized = finalize_response_text(acc, stop_reason)
+        if finalized != acc:
+            yield sse_message(finalized, event="token")
         # Feedback + trace bar once the response is complete.
         yield sse_message(fb_bar(run_id), event="actions")
         # The payload must be non-empty: an SSE frame with no `data:` line is not
@@ -1114,6 +1120,6 @@ async def _history_bubbles(thread_id: str) -> list[FT]:
         elif mtype == "ai" and text:
             # Collapse consecutive assistant messages (preamble + final answer)
             # into one bubble, matching the live single-bubble rendering.
-            pending_ai.append(text)
+            pending_ai.append(finalize_response_text(text, response_stop_reason(m)))
     _flush_ai()
     return bubbles
