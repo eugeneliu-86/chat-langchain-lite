@@ -25,6 +25,11 @@ model = init_chat_model(
     api_key=os.environ["LANGSMITH_API_KEY_GATEWAY"],
     max_tokens=300,
     temperature=0,
+).with_config(
+    metadata={
+        "ls_provider": MODEL_CONFIG["provider"],
+        "ls_model_name": MODEL_CONFIG["model"],
+    }
 )
 
 # --- Anthropic ---
